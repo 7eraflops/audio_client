@@ -1,4 +1,4 @@
-#include "FileClient.hpp"
+#include "File_client.hpp"
 #include "Flac.hpp"
 #include <algorithm>
 #include <alsa/asoundlib.h>
@@ -33,9 +33,13 @@ std::vector<int32_t> convert_to_32bit(const std::vector<int64_t> &buffer)
 inline void show_command_list()
 {
     std::cout << "\nCommands:\n"
-              << "1. list - List available files\n"
-              << "2. play <filename> - Play a file\n"
-              << "3. exit - Quit the program\n"
+              << "list - List available files\n"
+              << "send <filename> - Send a file to the server\n"
+              << "play <filename> - Play a file\n"
+              << "exit - Quit the program\n"
+              << "\nPlayback Controls:\n"
+              << "Press 'p' to pause/resume playback\n"
+              << "Press 's' or 'q' to stop playback\n"
               << "\nEnter command: ";
 }
 
@@ -226,11 +230,11 @@ int main()
     std::vector<char> file_list;
     try
     {
-        auto [server_ip, server_port] = FileClient::discoverServer();
+        auto [server_ip, server_port] = File_client::discover_server();
         std::cout << "Found server at " << server_ip << ":" << server_port << std::endl;
 
-        FileClient client(server_ip, server_port);
-        client.listFiles(file_list);
+        File_client client(server_ip, server_port);
+        client.list_files(file_list);
 
         std::string command;
         while (true)
@@ -246,17 +250,31 @@ int main()
             int cmd_code = 0;
             if (cmd == "list")
                 cmd_code = 1;
-            else if (cmd == "play")
+            else if (cmd == "send")
                 cmd_code = 2;
-            else if (cmd == "exit")
+            else if (cmd == "play")
                 cmd_code = 3;
+            else if (cmd == "exit")
+                cmd_code = 4;
 
             switch (cmd_code)
             {
             case 1:
-                client.listFiles(file_list);
+                client.list_files(file_list);
                 break;
             case 2:
+            {
+                std::string filename;
+                iss >> filename;
+                if (filename.empty())
+                {
+                    std::cout << "Invalid command format" << std::endl;
+                    continue;
+                }
+                client.upload_file(filename);
+                break;
+            }
+            case 3:
             {
                 std::string filename;
                 iss >> filename;
@@ -270,13 +288,13 @@ int main()
                     std::cout << "File not found" << std::endl;
                     break;
                 }
-                client.downloadFile(filename, DEFAULT_SAVE_PATH);
+                client.download_file(filename, DEFAULT_SAVE_PATH);
 
                 playAudio(DEFAULT_SAVE_PATH + "/" + filename);
                 clear_temp_directory();
                 break;
             }
-            case 3:
+            case 4:
                 clear_temp_directory();
                 return 0;
             default:

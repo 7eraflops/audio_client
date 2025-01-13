@@ -12,7 +12,7 @@
 
 namespace fs = std::filesystem;
 
-class FileClient
+class File_client
 {
 private:
     int sock;
@@ -22,14 +22,14 @@ private:
 
     static constexpr size_t BUFFER_SIZE = 8192;
 
-    bool ensureConnected()
+    bool ensure_connected()
     {
         if (connected)
             return true;
-        return connectToServer();
+        return connect_to_server();
     }
 
-    bool connectToServer()
+    bool connect_to_server()
     {
         struct sockaddr_in server_addr;
 
@@ -70,10 +70,10 @@ private:
     }
 
 public:
-    FileClient(const std::string &ip, int port)
+    File_client(const std::string &ip, int port)
         : server_ip(ip), server_port(port) {}
 
-    ~FileClient()
+    ~File_client()
     {
         if (connected)
         {
@@ -82,7 +82,7 @@ public:
         }
     }
 
-    static std::pair<std::string, int> discoverServer(int timeout_seconds = 5)
+    static std::pair<std::string, int> discover_server(int timeout_seconds = 5)
     {
         int sock = socket(AF_INET, SOCK_DGRAM, 0);
         if (sock < 0)
@@ -143,9 +143,9 @@ public:
         return {server_ip, server_port};
     }
 
-    bool listFiles(std::vector<char> &buffer)
+    bool list_files(std::vector<char> &buffer)
     {
-        if (!ensureConnected())
+        if (!ensure_connected())
             return false;
 
         const char *command = "LIST";
@@ -187,9 +187,9 @@ public:
         return true;
     }
 
-    bool downloadFile(const std::string &filename, const std::string &save_path)
+    bool download_file(const std::string &filename, const std::string &save_path)
     {
-        if (!ensureConnected())
+        if (!ensure_connected())
             return false;
 
         // Construct the full save path
@@ -283,5 +283,100 @@ public:
 
         file.close();
         return true;
+    }
+
+    bool upload_file(const std::string &filepath)
+    {
+        if (!ensure_connected())
+            return false;
+
+        // Check if file exists and get its size
+        if (!fs::exists(filepath))
+        {
+            std::cerr << "File does not exist: " << filepath << std::endl;
+            return false;
+        }
+
+        uintmax_t file_size;
+        try
+        {
+            file_size = fs::file_size(filepath);
+        }
+        catch (const fs::filesystem_error &e)
+        {
+            std::cerr << "Error getting file size: " << e.what() << std::endl;
+            return false;
+        }
+
+        // Get just the filename from the path
+        std::string filename = fs::path(filepath).filename().string();
+        std::string command = "PUT " + filename;
+
+        // Send upload command
+        if (send(sock, command.c_str(), command.size(), 0) <= 0)
+        {
+            std::cerr << "Failed to send upload command" << std::endl;
+            reconnect();
+            return false;
+        }
+
+        // Send file size
+        uint32_t size_net = htonl(static_cast<uint32_t>(file_size));
+        if (send(sock, &size_net, sizeof(size_net), 0) <= 0)
+        {
+            std::cerr << "Failed to send file size" << std::endl;
+            reconnect();
+            return false;
+        }
+
+        // Open and send file
+        std::ifstream file(filepath, std::ios::binary);
+        if (!file)
+        {
+            std::cerr << "Cannot open file: " << filepath << std::endl;
+            return false;
+        }
+
+        char buffer[BUFFER_SIZE];
+        bool success = true;
+
+        while (file && success)
+        {
+            file.read(buffer, BUFFER_SIZE);
+            std::streamsize bytes_read = file.gcount();
+
+            if (bytes_read > 0)
+            {
+                ssize_t bytes_sent = send(sock, buffer, bytes_read, 0);
+                if (bytes_sent <= 0)
+                {
+                    std::cerr << "Connection error during upload" << std::endl;
+                    success = false;
+                    break;
+                }
+            }
+        }
+
+        file.close();
+
+        if (success)
+        {
+            // Wait for server confirmation
+            char response[6];
+            ssize_t resp_size = recv(sock, response, sizeof(response) - 1, 0);
+            if (resp_size > 0)
+            {
+                response[resp_size] = '\0';
+                if (strcmp(response, "OK") == 0)
+                {
+                    std::cout << "File uploaded successfully" << std::endl;
+                    return true;
+                }
+            }
+        }
+
+        std::cerr << "File upload failed" << std::endl;
+        reconnect();
+        return false;
     }
 };
