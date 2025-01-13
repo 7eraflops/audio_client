@@ -1,8 +1,8 @@
-#include "main.h"
 #include "FileClient.hpp"
 #include "Flac.hpp"
 #include <algorithm>
 #include <alsa/asoundlib.h>
+#include <atomic>
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
@@ -10,6 +10,9 @@
 #include <iostream>
 #include <sstream>
 #include <stdio.h>
+#include <termios.h>
+#include <thread>
+#include <unistd.h>
 
 const std::string DEFAULT_SAVE_PATH = "../temp";
 const std::string PCM_DEVICE = "default";
@@ -78,6 +81,27 @@ void playAudio(const std::string &filename)
     int sample_rate = player.get_stream_info().sample_rate;
     int channels = player.get_stream_info().channels;
 
+    std::cout << "Now Playing: " << "\n";
+    const auto &comments = player.get_vorbis_comment().user_comments;
+    auto it = comments.find("ARTIST");
+    if (it != comments.end())
+    {
+        std::cout << "Artist: " << it->second << "\n";
+    }
+    else
+    {
+        std::cout << "Track Title not found.\n";
+    }
+    it = comments.find("TITLE");
+    if (it != comments.end())
+    {
+        std::cout << "Track Title: " << it->second << "\n";
+    }
+    else
+    {
+        std::cout << "Track Title not found.\n";
+    }
+
     snd_pcm_t *handle;
     snd_pcm_hw_params_t *params;
 
@@ -106,25 +130,92 @@ void playAudio(const std::string &filename)
     // Apply hardware parameters
     handleAlsaError(snd_pcm_hw_params(handle, params), "Cannot set parameters", handle);
 
-    // Main playback loop
-    while (!player.get_reader().eos())
-    {
-        player.decode_frame();
-        std::vector<int32_t> buffer = convert_to_32bit(player.get_audio_buffer());
+    // Atomic flag to control pause state
+    std::atomic<bool> is_paused(false);
+    std::atomic<bool> stop_playback(false);
+    std::atomic<bool> stop_input_thread(false);
 
-        snd_pcm_sframes_t frames = snd_pcm_writei(handle, buffer.data(), buffer.size() / channels);
-        if (frames < 0)
-        {
-            frames = snd_pcm_recover(handle, frames, 0);
-            if (frames < 0)
-            {
-                std::cerr << "Write failed: " << snd_strerror(frames) << "\n";
-                break;
+    // Input handling thread
+    std::thread input_thread([&]()
+                             {
+    struct termios old_tio, new_tio;
+    
+    // Get the terminal settings
+    tcgetattr(STDIN_FILENO, &old_tio);
+    
+    // Make a copy to modify
+    new_tio = old_tio;
+    
+    // Disable canonical mode and echo
+    new_tio.c_lflag &= (~ICANON & ~ECHO);
+    
+    // Set the new settings immediately
+    tcsetattr(STDIN_FILENO, TCSANOW, &new_tio);
+    
+    while (!stop_input_thread) {
+        fd_set fds;
+        struct timeval tv;
+        
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        
+        // Set timeout to 100ms
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;
+        
+        // Check for input
+        if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
+            char c;
+            if (read(STDIN_FILENO, &c, 1) > 0) {
+                if (c == 'p') {
+                    is_paused = !is_paused;
+                    snd_pcm_pause(handle, is_paused);
+                    std::cout << (is_paused ? "Paused" : "Resumed") << std::endl;
+                } else if (c == 's' || c == 'q') {
+                    stop_playback = true;
+                    stop_input_thread = true;
+                    snd_pcm_drop(handle);
+                    std::cout << "Playback stopped" << std::endl;
+                    break;
+                }
             }
         }
     }
+    
+    // Restore the old terminal settings
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_tio); });
 
-    // Drain the buffer and close
+    // Main playback loop
+    while (!player.get_reader().eos() && !stop_playback)
+    {
+        if (!is_paused)
+        {
+            player.decode_frame();
+            std::vector<int32_t> buffer = convert_to_32bit(player.get_audio_buffer());
+
+            snd_pcm_sframes_t frames = snd_pcm_writei(handle, buffer.data(), buffer.size() / channels);
+            if (frames < 0)
+            {
+                frames = snd_pcm_recover(handle, frames, 0);
+                if (frames < 0)
+                {
+                    std::cerr << "Write failed: " << snd_strerror(frames) << "\n";
+                    break;
+                }
+            }
+        }
+        else
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+    // Signal input thread to stop and wait for it
+    stop_playback = true;
+    stop_input_thread = true;
+    input_thread.join();
+
+    // Clean up
     snd_pcm_drain(handle);
     snd_pcm_close(handle);
 }
@@ -179,10 +270,7 @@ int main()
                     std::cout << "File not found" << std::endl;
                     break;
                 }
-                if (client.downloadFile(filename, DEFAULT_SAVE_PATH))
-                {
-                    std::cout << "File downloaded successfully" << std::endl;
-                }
+                client.downloadFile(filename, DEFAULT_SAVE_PATH);
 
                 playAudio(DEFAULT_SAVE_PATH + "/" + filename);
                 clear_temp_directory();

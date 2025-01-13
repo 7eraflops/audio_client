@@ -252,9 +252,6 @@ public:
             return false;
         }
 
-        std::cout << "Downloading " << filename << " (" << file_size << " bytes)..." << std::endl;
-        std::cout << "Saving to: " << final_path.string() << std::endl;
-
         char buffer[BUFFER_SIZE];
         uint32_t remaining = file_size;
         uint32_t total_received = 0;
@@ -282,13 +279,7 @@ public:
 
             remaining -= bytes_read;
             total_received += bytes_read;
-
-            // Show progress
-            float progress = (float)total_received / file_size * 100;
-            std::cout << "\rProgress: " << static_cast<int>(progress) << "%" << std::flush;
         }
-
-        std::cout << "\nDownload complete!" << std::endl;
 
         file.close();
         return true;
